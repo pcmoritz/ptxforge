@@ -26,7 +26,7 @@ int main() {
     CUDA_CHECK(cuCtxCreate(&cuContext, 0, cuDevice));
 
     // Load the CUBIN module
-    CUDA_CHECK(cuModuleLoad(&cuModule, "loop.cubin"));
+    CUDA_CHECK(cuModuleLoad(&cuModule, "test.cubin"));
 
     // Get the kernel function from the module
     CUDA_CHECK(cuModuleGetFunction(&cuFunction, cuModule, "main"));

@@ -33,37 +33,40 @@
 ;; This is currently very specialized for printf, need to generalize
 (defmacro call (function &rest args)
   `(progn
-     (.param .b64 param0)
-     (.param .b64 param1)
-     (.param .b32 retval)
+     (.param ".b64 param0")
+     (.param ".b64 param1")
+     (.param ".b32 retval")
      (st.param.b64 "[param0+0]" ,(nth 0 args))
      (st.param.u64 "[param1+0]" ,(nth 1 args))
      (call.uni "(retval)" ,function "(param0, param1)")))
 
 ;; TODO: Add some more error checking here. Also, this should be made a lot more generic
+;; (e.g. currently the format string is hardcoded which is easy to change)
 (defmacro printf (fmt &rest args)
   (let* ((depot (string (gensym "local_depot"))))
     `(progn
        (.global ".align 1 .b8 $str[4] = {37, 100, 10}")
-       (.local ".align 8 .b8 " ,depot)
-       (.reg .b64 %SP)
-       (.reg .b64 %SPL)
-       (.reg .b32 %r)
-       (.reg .b64 %rd<3>)
-       (.reg .u64 %str)
-       (mov.u64 %SPL ,depot)
-       (cvta.local.u64 %SP %SPL)
-       (add.u64 %rd1 %SP 0)
-       (add.u64 %rd2 %SPL 0)
+       (.local ,(format nil ".align 8 .b8 ~a" depot))
+       (.reg ".b64 %sp")
+       (.reg ".b64 %spl")
+       (.reg ".b32 %r")
+       (.reg ".b64 %rd<3>")
+       (.reg ".u64 %str")
+       (mov.u64 %spl ,depot)
+       (cvta.local.u64 %SP %spl)
+       (add.u64 %rd1 %sp 0)
+       (add.u64 %rd2 %spl 0)
        (mov.u32 %r ,(nth 0 args))
+       (st.local.u32 "[%rd2]" %r)
        (cvta.global.u64 %str $str)
-       (call 'vprintf %str %rd1))))
+       (call vprintf %str %rd1))))
 
 (defun emit-header ()
   (format t ".version 7.0~%")
   (format t ".target sm_50~%")
   (format t ".address_size 64~%~%"))
 
+;; TODO: Need to update this to use the new list based IR (instead of strings)
 (defmacro for ((var &key from to (by 1)) &body body)
   "Generate PTX assembly code for a loop."
   (let* ((start from)
@@ -139,7 +142,7 @@
     (cond
       ;; If the form is a list starting with PROGN, treat it as a block and recursively convert.
       ((and (consp form) (eq (car form) 'progn))
-       (format nil "{~%~a~%~a}"
+       (format nil "{~%~a;~%~a}"
                (string-join (mapcar (lambda (subform)
                                       (convert-to-ptx subform (1+ indent-level)))
                                     (cdr form))
@@ -156,7 +159,7 @@
                (string-downcase (princ-to-string (car form)))
                (string-join (mapcar (lambda (subform)
                                       (convert-to-ptx subform indent-level))
-                                    (cdr form)) " ")))
+                                    (cdr form)) ", ")))
 
       ;; Convert symbols and numbers directly to strings, ensuring symbols are lowercase
       ((symbolp form) (string-downcase (symbol-name form)))
