@@ -30,9 +30,26 @@
 
 ;; (emit-printf "%d" 0)
 
-;; TODO: Add some more error checking here
+;; This is currently very specialized for printf, need to generalize
+(defmacro call (function &rest args)
+  `(progn
+     (.param .b64 param0)
+     (.param .b64 param1)
+     (.param .b32 retval)
+     (st.param.b64 "[param0+0]" ,(nth 0 args))
+     (st.param.u64 "[param1+0]" ,(nth 1 args))
+     (call.uni "(retval)" ,function "(param0, param1)")))
+
+;; TODO: Add some more error checking here. Also, this can probably be made more generic
 (defmacro printf (fmt &rest args)
   (let* ((depot (string (gensym "local_depot"))))
+    `(progn
+       (.global ".align 1 .b8 $str[4] = {37, 100, 10}")
+       (.local ".align 8 .b8 " ,depot)
+       ;; TODO: Fill in
+       (.reg .u64 %str)
+       (cvta.global.u64 %str $str)
+       (call 'vprintf %str ,@args))))
 
 (defun emit-header ()
   (format t ".version 7.0~%")
@@ -71,8 +88,15 @@
        (format t "    ret;~%")
        (format t "}~%"))))
 
-;; define a device function with parameters and a return value
-;; (defmacro defdevice
+;; Define a device function with parameters and a return value
+;; TODO: Device function rguments and return value are yet to be implemented
+(defmacro defdevice (name args &body body)
+  "Defines a device function with the given name, arguments and body."
+  `(".entry" "{" "ret;" "}"))
+
+(defdevice main ()
+  (for (i :from 0 :to 10)
+       (printf "%d" i)))
 
 (for (i :from 0 :to 10)
      "mul.lo.u32 %index, %i, 4"
@@ -81,3 +105,53 @@
 ;; we eventually want to get this working
 (for (i :from 0 :to 10)
      (printf "%d" i))
+
+(defun macroexpand-all (form &optional env)
+  "Recursively expand all macros in the given form."
+  (cond
+    ;; If the form is not a list, it's a literal (like a number or symbol), return it as-is
+    ((atom form) form)
+
+    ;; If the form is a macro call, expand it and recursively expand the result
+    ((macro-function (car form) env)
+     (macroexpand-all (macroexpand form env) env))
+
+    ;; Otherwise, recursively expand each element in the list
+    (t (cons (macroexpand-all (car form) env)
+             (mapcar #'(lambda (x) (macroexpand-all x env))
+                     (cdr form))))))
+
+(defun string-join (strings &optional (separator " "))
+  "Concatenates a list of strings with the specified separator."
+  (reduce (lambda (x y) (concatenate 'string x separator y)) strings))
+
+(defun convert-to-ptx (form &optional (indent-level 0))
+  "Convert a Lisp representation of PTX code into PTX assembly code."
+  (let ((indent (make-string (* 2 indent-level) :initial-element #\Space)))
+    (cond
+      ;; If the form is a list starting with PROGN, treat it as a block and recursively convert.
+      ((and (consp form) (eq (car form) 'progn))
+       (format nil "{~%~a~%~a}"
+               (string-join (mapcar (lambda (subform)
+                                      (convert-to-ptx subform (1+ indent-level)))
+                                    (cdr form))
+			    (format nil ";~%~a" indent))
+               indent))
+
+      ;; Convert .GLOBAL, .LOCAL, .REG, etc., as strings
+      ((and (consp form) (stringp (car form)))
+       (format nil "~a" (string-join (mapcar #'princ-to-string form) " ")))
+
+      ;; Handle individual PTX instructions, converting sub-expressions recursively.
+      ((consp form)
+       (format nil "~a ~a"
+               (string-downcase (princ-to-string (car form)))
+               (string-join (mapcar (lambda (subform)
+                                      (convert-to-ptx subform indent-level))
+                                    (cdr form)) " ")))
+
+      ;; Convert symbols and numbers directly to strings, ensuring symbols are lowercase
+      ((symbolp form) (string-downcase (symbol-name form)))
+
+      ;; For all other literals, convert to string as-is
+      (t (princ-to-string form)))))
