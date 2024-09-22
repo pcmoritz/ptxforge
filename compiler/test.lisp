@@ -40,16 +40,24 @@
      (st.param.u64 "[param1+0]" ,(nth 1 args))
      (call.uni "(retval)" ,function "(param0, param1)")))
 
-;; TODO: Add some more error checking here. Also, this can probably be made more generic
+;; TODO: Add some more error checking here. Also, this should be made a lot more generic
 (defmacro printf (fmt &rest args)
   (let* ((depot (string (gensym "local_depot"))))
     `(progn
        (.global ".align 1 .b8 $str[4] = {37, 100, 10}")
        (.local ".align 8 .b8 " ,depot)
-       ;; TODO: Fill in
+       (.reg .b64 %SP)
+       (.reg .b64 %SPL)
+       (.reg .b32 %r)
+       (.reg .b64 %rd<3>)
        (.reg .u64 %str)
+       (mov.u64 %SPL ,depot)
+       (cvta.local.u64 %SP %SPL)
+       (add.u64 %rd1 %SP 0)
+       (add.u64 %rd2 %SPL 0)
+       (mov.u32 %r ,(nth 0 args))
        (cvta.global.u64 %str $str)
-       (call 'vprintf %str ,@args))))
+       (call 'vprintf %str %rd1))))
 
 (defun emit-header ()
   (format t ".version 7.0~%")
