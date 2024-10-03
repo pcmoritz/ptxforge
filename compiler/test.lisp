@@ -31,7 +31,7 @@
 ;; (emit-printf "%d" 0)
 
 ;; This is currently very specialized for printf, need to generalize
-(defmacro call (function &rest args)
+(defmacro call-func (function &rest args)
   `(progn
      (.param ".b64 param0")
      (.param ".b64 param1")
@@ -43,9 +43,10 @@
 ;; TODO: Add some more error checking here. Also, this should be made a lot more generic
 ;; (e.g. currently the format string is hardcoded which is easy to change)
 (defmacro printf (fmt &rest args)
-  (let* ((depot (string (gensym "local_depot"))))
+  (let* ((depot (string (gensym "local_depot")))
+	 (s (format nil "{~{~a~^, ~}}" (map 'list #'char-code fmt))))
     `(progn
-       (.global ".align 1 .b8 $str[4] = {37, 100, 10}")
+       (.global ,(format nil ".align 1 .b8 $str[~a] = ~a" (length s) s))
        (.local ,(format nil ".align 8 .b8 ~a" depot))
        (.reg ".b64 %sp")
        (.reg ".b64 %spl")
@@ -59,7 +60,7 @@
        (mov.u32 %r ,(nth 0 args))
        (st.local.u32 "[%rd2]" %r)
        (cvta.global.u64 %str $str)
-       (call vprintf %str %rd1))))
+       (call-func vprintf %str %rd1))))
 
 (defun emit-header ()
   (format t ".version 7.0~%")
@@ -69,35 +70,22 @@
 ;; TODO: Need to update this to use the new list based IR (instead of strings)
 (defmacro for ((var &key from to (by 1)) &body body)
   "Generate PTX assembly code for a loop."
-  (let* ((start from)
-         (end to)
-         (step by)
-         (loop-label (string (gensym "loop_start")))
-         (end-label (string (gensym "loop_end")))
-         (ptx-body (mapcar (lambda (form)
-                             (format nil "~a;" form))
-                           body)))
-    `(progn
-       (format t ".entry main~%")
-       (format t "{~%")
-       (format t "    .reg .u32 ~a;~%" ',var)
-       (format t "    .reg .u32 %max;~%")
-       (format t "    .reg .u32 %index;~%")
-       (format t "    .reg .pred %p;")
-       (format t "    .local .u32 array[~d];~%~%" (1+ ,end))
-       (format t "    mov.u32 ~a, ~d;~%" ',var ,start)
-       (format t "    mov.u32 %max, ~d;~%~%" ,end)
-       (format t "~a:~%" ,loop-label)
-       (format t "    setp.ge.u32 %p, ~a, %max;~%" ',var)
-       (format t "    @%p bra ~a;~%" ,end-label)
-       ,@(mapcar (lambda (form)
-                   `(format t "    ~a~%" ,form))
-                 ptx-body)
-       (format t "    add.u32 ~a, ~a, ~d;~%" ',var ',var ,step)
-       (format t "    bra ~a;~%" ,loop-label)
-       (format t "~a:~%" ,end-label)
-       (format t "    ret;~%")
-       (format t "}~%"))))
+  (let* ((loop-label (gensym "loop_start"))
+         (end-label (gensym "loop_end")))
+    `(tagbody
+	(.reg ,(format nil ".u32 ~a" (string-downcase (string var))))
+	(.reg ".u32 %max")
+	(.reg ".u32 %index")
+	(.reg ".pred %p")
+	(mov.u32 ,var ,from)
+	(mov.u32 %max ,to)
+	,loop-label
+	(setp.ge.u32 %p ,var %max)
+	,(format nil "    @%p bra ~a;" end-label)
+	,@body
+	(add.u32 ,var ,var ,by)
+	(bra ,loop-label)
+       ,end-label)))
 
 ;; Define a device function with parameters and a return value
 ;; TODO: Device function rguments and return value are yet to be implemented
@@ -134,35 +122,59 @@
 
 (defun string-join (strings &optional (separator " "))
   "Concatenates a list of strings with the specified separator."
-  (reduce (lambda (x y) (concatenate 'string x separator y)) strings))
+  (with-output-to-string (out)
+      (loop for (s . rest) on strings
+	    do (write-string s out)
+	    unless (null rest)
+	      do (write-string separator out))))
 
-(defun convert-to-ptx (form &optional (indent-level 0))
-  "Convert a Lisp representation of PTX code into PTX assembly code."
+(defun indent (out indent-level colon? atsign?)
+  (declare (ignore colon? atsign?))
   (let ((indent (make-string (* 2 indent-level) :initial-element #\Space)))
-    (cond
-      ;; If the form is a list starting with PROGN, treat it as a block and recursively convert.
-      ((and (consp form) (eq (car form) 'progn))
-       (format nil "{~%~a;~%~a}"
-               (string-join (mapcar (lambda (subform)
-                                      (convert-to-ptx subform (1+ indent-level)))
-                                    (cdr form))
-			    (format nil ";~%~a" indent))
-               indent))
+    (format out "~a" indent)))
 
-      ;; Convert .GLOBAL, .LOCAL, .REG, etc., as strings
-      ((and (consp form) (stringp (car form)))
-       (format nil "~a" (string-join (mapcar #'princ-to-string form) " ")))
+(defun convert-progn (body indent)
+  (with-output-to-string (out)
+    (format out "{")
+    (dolist (form body)
+      (format out "~%~/indent/~a" (1+ indent) (convert-to-ptx form (1+ indent))))
+    (format out "~%~/indent/}" indent)))
 
-      ;; Handle individual PTX instructions, converting sub-expressions recursively.
-      ((consp form)
-       (format nil "~a ~a"
-               (string-downcase (princ-to-string (car form)))
-               (string-join (mapcar (lambda (subform)
-                                      (convert-to-ptx subform indent-level))
-                                    (cdr form)) ", ")))
+(defun convert-tagbody (body indent)
+  (with-output-to-string (out)
+    (dolist (form body)
+      (if (symbolp form)
+	  (format out "~a: " (string-downcase (string form)))
+	  (format out "~a~%~/indent/" (convert-to-ptx form (1+ indent)) indent)))))
 
-      ;; Convert symbols and numbers directly to strings, ensuring symbols are lowercase
-      ((symbolp form) (string-downcase (symbol-name form)))
+(defun convert-instruction (form indent)
+  (format nil "~a;"
+	  (string-join (list (string-downcase (princ-to-string (car form)))
+			     (string-join (mapcar (lambda (subform)
+						    (convert-to-ptx subform indent))
+						  (cdr form)) ", ")))))
 
-      ;; For all other literals, convert to string as-is
-      (t (princ-to-string form)))))
+(defun convert-to-ptx (form &optional (indent 0))
+  "Convert a Lisp representation of PTX code into PTX assembly code."
+  (cond
+    ;; If the form is a list starting with PROGN, treat it as a block
+    ((and (consp form) (eq (car form) 'progn))
+     (convert-progn (cdr form) indent))
+
+    ;; Convert tagbody
+    ((and (consp form) (eq (car form) 'tagbody))
+     (convert-tagbody (cdr form) indent))
+
+    ;; Convert .GLOBAL, .LOCAL, .REG, etc., as strings
+    ((and (consp form) (stringp (car form)))
+     (format nil "~a" (string-join (mapcar #'princ-to-string form) " ")))
+
+    ;; Handle individual PTX instructions, converting sub-expressions recursively.
+    ((consp form)
+     (convert-instruction form indent))
+
+    ;; Convert symbols and numbers directly to strings, ensuring symbols are lowercase
+    ((symbolp form) (string-downcase (symbol-name form)))
+
+    ;; For all other literals, convert to string as-is
+    (t (princ-to-string form))))
