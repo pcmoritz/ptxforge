@@ -36,9 +36,9 @@
      (.param ".b64 param0")
      (.param ".b64 param1")
      (.param ".b32 retval")
-     (st.param.b64 "[param0+0]" ,(nth 0 args))
-     (st.param.u64 "[param1+0]" ,(nth 1 args))
-     (call.uni "(retval)" ,function "(param0, param1)")))
+     (%st.param.b64 "[param0+0]" ,(nth 0 args))
+     (%st.param.u64 "[param1+0]" ,(nth 1 args))
+     (%call.uni "(retval)" ,function "(param0, param1)")))
 
 ;; TODO: Add some more error checking here. Also, this should be made a lot more generic
 ;; (e.g. currently the format string is hardcoded which is easy to change)
@@ -53,13 +53,13 @@
        (.reg ".b32 %r")
        (.reg ".b64 %rd<3>")
        (.reg ".u64 %str")
-       (mov.u64 %spl ,depot)
-       (cvta.local.u64 %SP %spl)
-       (add.u64 %rd1 %sp 0)
-       (add.u64 %rd2 %spl 0)
-       (mov.u32 %r ,(nth 0 args))
-       (st.local.u32 "[%rd2]" %r)
-       (cvta.global.u64 %str $str)
+       (%mov.u64 %spl ,depot)
+       (%cvta.local.u64 %SP %spl)
+       (%add.u64 %rd1 %sp 0)
+       (%add.u64 %rd2 %spl 0)
+       (%mov.u32 %r ,(nth 0 args))
+       (%st.local.u32 "[%rd2]" %r)
+       (%cvta.global.u64 %str $str)
        (call-func vprintf %str %rd1))))
 
 (defun emit-header ()
@@ -77,14 +77,14 @@
 	(.reg ".u32 %max")
 	(.reg ".u32 %index")
 	(.reg ".pred %p")
-	(mov.u32 ,var ,from)
-	(mov.u32 %max ,to)
+	(%mov.u32 ,var ,from)
+	(%mov.u32 %max ,to)
 	,loop-label
-	(setp.ge.u32 %p ,var %max)
+	(%setp.ge.u32 %p ,var %max)
 	,(format nil "    @%p bra ~a;" end-label)
 	,@body
-	(add.u32 ,var ,var ,by)
-	(bra ,loop-label)
+	(%add.u32 ,var ,var ,by)
+	(%bra ,loop-label)
 	,end-label)))
 
 (defun translate-args (args)
@@ -103,7 +103,7 @@
 
 (defmacro defkernel (name args &body body)
   "Define a kernel with the given name, arguments and body."
-  `(%entry ,name (progn ,@body)))
+  `(%entry ,name ,(translate-args args) (progn ,@body)))
 
 (defdevice func ((n int))
   (for (i :from 0 :to n)
@@ -170,7 +170,7 @@
 
 (defun convert-instruction (form indent)
   (format nil "~a;"
-	  (string-join (list (string-downcase (princ-to-string (car form)))
+	  (string-join (list (subseq (string-downcase (string (car form))) 1)
 			     (string-join (mapcar (lambda (subform)
 						    (convert-to-ptx subform indent))
 						  (cdr form)) ", ")))))
@@ -183,7 +183,7 @@
 	  (push param params)
 	  (format out ".param .b32 ~(~a~);~%~/indent/" param indent)
 	  (format out "st.param.b32 [~(~a~)], ~a;~%~/indent/" param arg indent)))
-      (format out "call ~(~a~) (~a);~%~/indent/" function (string-join (nreverse params) ", ") indent))))
+      (format out "call ~(~a~), (~a);" function (string-join (nreverse params) ", ")))))
 
 (defun convert-to-ptx (form &optional (indent 0))
   "Convert a Lisp representation of PTX code into PTX assembly code."
@@ -205,8 +205,11 @@
      (format nil "~a ~a;" (string-downcase (string (first form))) (second form)))
 
     ;; Handle individual PTX instructions, converting sub-expressions recursively.
-    ((consp form)
+    ((and (consp form) (and (symbolp (first form)) (eq (char (symbol-name (first form)) 0) #\%)))
      (convert-instruction form indent))
+
+    ((consp form)
+     (convert-funcall (first form) (rest form) indent))
 
     ;; Convert symbols and numbers directly to strings, ensuring symbols are lowercase
     ((symbolp form) (string-downcase (symbol-name form)))
