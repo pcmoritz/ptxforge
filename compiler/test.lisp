@@ -85,17 +85,32 @@
 	,@body
 	(add.u32 ,var ,var ,by)
 	(bra ,loop-label)
-       ,end-label)))
+	,end-label)))
+
+(defun translate-args (args)
+  (let (result)
+    (dolist (arg args)
+      ;; set the type of the symbol
+      (setf (get (first arg) 'type) (second arg))
+      (push (format nil ".reg .b32 ~(~a~)" (first arg)) result))
+    (format nil "(~a)" (string-join (nreverse result) ", "))))
 
 ;; Define a device function with parameters and a return value
 ;; TODO: Device function rguments and return value are yet to be implemented
 (defmacro defdevice (name args &body body)
-  "Defines a device function with the given name, arguments and body."
-  `(".entry" "{" "ret;" "}"))
+  "Define a device function with the given name, arguments and body."
+  `(%func ,name ,(translate-args args) (progn ,@body)))
 
-(defdevice main ()
-  (for (i :from 0 :to 10)
-       (printf "%d" i)))
+(defmacro defkernel (name args &body body)
+  "Define a kernel with the given name, arguments and body."
+  `(%entry ,name (progn ,@body)))
+
+(defdevice func ((n int))
+  (for (i :from 0 :to n)
+    (printf "%d" i)))
+
+(defkernel main ()
+  (func 42))
 
 (for (i :from 0 :to 10)
      "mul.lo.u32 %index, %i, 4"
@@ -147,12 +162,28 @@
 	  (format out "~a: " (string-downcase (string form)))
 	  (format out "~a~%~/indent/" (convert-to-ptx form (1+ indent)) indent)))))
 
+(defun convert-function (kind args name body indent)
+  (let ((intro (case kind (%entry ".entry") (%func ".func"))))
+    (with-output-to-string (out)
+      (format out "~a ~(~a~) ~a " intro args name)
+      (format out (convert-to-ptx body indent)))))
+
 (defun convert-instruction (form indent)
   (format nil "~a;"
 	  (string-join (list (string-downcase (princ-to-string (car form)))
 			     (string-join (mapcar (lambda (subform)
 						    (convert-to-ptx subform indent))
 						  (cdr form)) ", ")))))
+
+(defun convert-funcall (function args indent)
+  (with-output-to-string (out)
+    (let (params)
+      (dolist (arg args)
+	(let ((param (string-downcase (string (gensym "param")))))
+	  (push param params)
+	  (format out ".param .b32 ~(~a~);~%~/indent/" param indent)
+	  (format out "st.param.b32 [~(~a~)], ~a;~%~/indent/" param arg indent)))
+      (format out "call ~(~a~) (~a);~%~/indent/" function (string-join (nreverse params) ", ") indent))))
 
 (defun convert-to-ptx (form &optional (indent 0))
   "Convert a Lisp representation of PTX code into PTX assembly code."
@@ -165,9 +196,13 @@
     ((and (consp form) (eq (car form) 'tagbody))
      (convert-tagbody (cdr form) indent))
 
+    ;; Convert kernel and function definitions
+    ((and (consp form) (member (car form) '(%entry %func)))
+     (convert-function (nth 0 form) (nth 1 form) (nth 2 form) (nth 3 form) indent))
+
     ;; Convert .GLOBAL, .LOCAL, .REG, etc., as strings
-    ((and (consp form) (stringp (car form)))
-     (format nil "~a" (string-join (mapcar #'princ-to-string form) " ")))
+    ((and (consp form) (member (car form) '(.global .local .reg .param)))
+     (format nil "~a ~a;" (string-downcase (string (first form))) (second form)))
 
     ;; Handle individual PTX instructions, converting sub-expressions recursively.
     ((consp form)
